@@ -2,6 +2,16 @@
 
 Versions after 1.0.0 are test builds running on one car (Hyundai Ioniq 6, US, firmware 260507). 1.3.3 is published as a test build (an update for a car on 1.0.0); the main release is still 1.0.0.
 
+## 1.1.15 (2026-11-17, fork: Ioniq 6 CEEV 260903, not yet tried in the car)
+
+From the first recordings (a drive with one bar of LTE):
+
+- **Sync for live videos.** The phone serves most videos as a low-latency live stream (in 0.2-second pieces), and the car plays it close to the live edge with under a second loaded. After every stall ExoPlayer moved the picture another half second back from the live edge, so it ended several seconds behind the phone's sound. 1.1.13's sync couldn't see it: in a live stream the position doesn't count up with time, so it never acted. Now the car keeps the picture as far from the live edge as it was when it started, and after a stall it skips ahead to the sound. Loading only just keeps up with the stream, so playing faster can't catch up. The skipped part is picture only: you heard its sound. Seeks and pauses take a new starting point.
+- **The home key closes the video.** Under the video the head unit shows its launcher (that's what borrowing the screen does), so pressing home changed no screen and 1.1.14 didn't notice. Now it listens for the home key.
+- 1.1.14 could have closed the video by mistake on a slower head unit: CarPlay's own screen stops about a second after every video starts. That check is now only used where the top screen can't be read.
+- A closed live video stops loading (it went on loading 22 seconds ahead through the phone), and starts again from the live edge if it's shown again.
+- The log says what kind of stream the phone serves (live or not, piece lengths, hold-back).
+
 ## 1.1.14 (2026-11-17, fork: Ioniq 6 CEEV 260903, not yet tried in the car)
 
 - **The head unit's keys work during a video.** The video's window took the keys and ignored them, so home, map, setup and exit did nothing and the video stayed on top. The window no longer takes the keys: they go to CarPlay and the head unit as without a video. When another screen comes up (the launcher, the map, the settings, CarPlay closing), the video closes and pauses, and CarPlay gets its screen back.

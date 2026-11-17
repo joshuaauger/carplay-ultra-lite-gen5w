@@ -79,6 +79,7 @@ public final class Video {
         noSound = new File(FILES + "cpc-video-nosound").exists();
         noSync = new File(FILES + "cpc-video-nosync").exists();
         watchActivities();
+        watchHomeKey();
         // 2026-11-11: CarPlay's process died 1.7 s into a video with nothing in the log; record any uncaught error first
         final Thread.UncaughtExceptionHandler before = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
@@ -221,6 +222,7 @@ public final class Video {
             if (player != null && ms != null) {
                 player.seekTo(ms);
                 sync.seek(ms, now());
+                rebaseLive("the phone seeked");
             }
         } else if ("stop".equals(type) || "removePlayQueueItem".equals(type)) {
             stop("phone: " + type);
@@ -261,7 +263,12 @@ public final class Video {
         String lower = url.toLowerCase(java.util.Locale.US);
         String path = Uri.parse(url).getPath() == null ? "" : Uri.parse(url).getPath().toLowerCase(java.util.Locale.US);
         boolean progressive = !(path.endsWith(".m3u8") || path.endsWith(".m3u") || lower.contains(".m3u8?") || lower.contains("format=m3u8"));
-        MediaItem media = MediaItem.fromUri(url);
+        // a live stream (the phone serves most videos as low-latency HLS, 2026-11-17): ExoPlayer's own live speed
+        // control moved the picture 0.5 s further from the live edge at every stall, so it ended seconds behind the
+        // phone's sound. With video_sync, followLive keeps it where it started instead
+        MediaItem.Builder mb = new MediaItem.Builder().setUri(url);
+        if (!noSync) mb.setLiveConfiguration(new MediaItem.LiveConfiguration.Builder().setMinPlaybackSpeed(1f).setMaxPlaybackSpeed(1f).build());
+        MediaItem media = mb.build();
         // on mobile data a load fails now and then: retried LOAD_RETRIES times (1 s more between each, at most 5 s)
         // before the player gives up, then the player itself is retried (onPlayerError)
         DefaultLoadErrorHandlingPolicy retry = new DefaultLoadErrorHandlingPolicy(LOAD_RETRIES);
@@ -269,6 +276,8 @@ public final class Video {
                 : new HlsMediaSource.Factory(data).setAllowChunklessPreparation(true).setLoadErrorHandlingPolicy(retry).createMediaSource(media);
         release();
         sync.reset();
+        rebaseLive("new video");
+        manifestLogged = false;
         retries = 0;
         retrying = false;
         subtitleChoice = -1;
@@ -519,6 +528,11 @@ public final class Video {
         }
 
         @Override
+        public void onTimelineChanged(com.google.android.exoplayer2.Timeline timeline, int reason) {
+            if (!manifestLogged) logManifest();
+        }
+
+        @Override
         public void onCues(com.google.android.exoplayer2.text.CueGroup cues) {
             if (controls == null) return;
             StringBuilder b = new StringBuilder();
@@ -677,6 +691,11 @@ public final class Video {
         controls.show();
         shown = true;
         if (player != null) {
+            // a live video stopped when it was closed (hide): loading again from the live edge, where the sound is
+            if (player.getPlaybackState() == Player.STATE_IDLE && player.getPlayerError() == null) {
+                player.seekToDefaultPosition();
+                player.prepare();
+            }
             want(true);
             VideoSize s = player.getVideoSize();
             if (s.width > 0) layoutSurface(s.width, s.height, s.pixelWidthHeightRatio);
@@ -706,6 +725,7 @@ public final class Video {
             long to = Math.max(0, d > 0 ? Math.min(ms, d) : ms);
             player.seekTo(to);
             sync.seek(to, now());
+            rebaseLive("seeked on the car");
             trace("seek to " + ms / 1000 + " s (on the car)");
         }
 
@@ -866,9 +886,11 @@ public final class Video {
     /** play or pause, from the phone (setRate) or the car's controls; the sound's clock holds while paused */
     static void want(boolean play) {
         if (player == null) return;
+        boolean was = player.getPlayWhenReady();
         player.setPlayWhenReady(play);
         if (play) sync.resume(now());
         else sync.pause(now());
+        if (play != was) rebaseLive(play ? "playing again" : "paused");
     }
 
     /** a playbackState "paused" notification: the phone pauses its sound (as it did for a stall, 2026-11-11) */
@@ -919,6 +941,10 @@ public final class Video {
         if (noSync) return;
         long now = now();
         boolean moving = player.isPlaying();
+        if (player.isCurrentMediaItemLive()) {
+            followLive(now, moving);
+            return;
+        }
         Sync.Step st = sync.step(now, player.getCurrentPosition(), player.getBufferedPosition(), moving);
         if (st.seekTo >= 0) {
             log("video: sync: picture " + st.behind + " ms behind the sound, jumping to " + st.seekTo / 1000 + " s (loaded)");
@@ -945,7 +971,118 @@ public final class Video {
         }
     }
 
+    // ---- live streams: the picture kept at the distance from the live edge it started at ----
+
+    /** behind where it started by more than LIVE_JUMP_MS (a stall): skip ahead to the sound, LIVE_LEAD_MS more for the seek */
+    static final long LIVE_JUMP_MS = 600, LIVE_LEAD_MS = 250, LIVE_COOLDOWN_MS = 2500;
+    static final long[] liveGaps = new long[5];
+    static int liveSamples;
+    static long liveBase = C.TIME_UNSET, lastLiveJump, lastLiveLog;
+    static String liveWhy = "";
+    static boolean manifestLogged;
+
+    /** a new starting point is taken once the video plays steadily again (after a new video, a seek, a pause) */
+    static void rebaseLive(String why) {
+        liveBase = C.TIME_UNSET;
+        liveSamples = 0;
+        liveWhy = why;
+    }
+
+    /** how far the picture is behind the live edge: by the stream's clock if it has one, else from the window's end */
+    static long liveGap() {
+        long off = player.getCurrentLiveOffset();
+        if (off != C.TIME_UNSET) return off;
+        long d = player.getDuration();
+        return d == C.TIME_UNSET ? C.TIME_UNSET : d - player.getCurrentPosition();
+    }
+
+    /**
+     * The phone's sound plays on through the car's stalls. The live edge moves with it, so the distance from the
+     * edge measures the picture against the sound: after a stall it has grown by the stall's length. Loading
+     * barely keeps up with real time (2026-11-17: ~6 Mbit/s on one connection for a 6-8 Mbit/s stream), so the
+     * picture can't catch up by playing faster: it skips ahead to the sound, leaving out what the stall missed.
+     * The gap is the median of the last 5 samples (2.5 s): the window's end moves in 0.2 s steps.
+     */
+    static void followLive(long now, boolean moving) {
+        if (!moving || player.getPlaybackState() != Player.STATE_READY) {
+            liveSamples = 0;
+            return;
+        }
+        long g = liveGap();
+        if (g == C.TIME_UNSET) return;
+        liveGaps[liveSamples % liveGaps.length] = g;
+        liveSamples++;
+        if (liveSamples < liveGaps.length) return;
+        long[] sorted = liveGaps.clone();
+        java.util.Arrays.sort(sorted);
+        long gap = sorted[sorted.length / 2];
+        if (liveBase == C.TIME_UNSET) {
+            liveBase = gap;
+            lastLiveLog = now;
+            log("video: sync (live): picture " + gap + " ms behind the live edge, kept there (" + liveWhy + ")");
+            return;
+        }
+        long behind = gap - liveBase;
+        if (behind > LIVE_JUMP_MS && now - lastLiveJump > LIVE_COOLDOWN_MS) {
+            long to = player.getCurrentPosition() + behind + LIVE_LEAD_MS;
+            long d = player.getDuration();
+            if (d != C.TIME_UNSET) to = Math.min(to, d - 100);
+            log("video: sync (live): picture " + behind + " ms behind the sound after a stall, skipping ahead");
+            player.seekTo(to);
+            lastLiveJump = now;
+            liveSamples = 0;
+            return;
+        }
+        if (now - lastLiveLog >= SYNC_LOG_MS) {
+            lastLiveLog = now;
+            log("video: sync (live): " + gap + " ms behind the live edge (" + behind + " ms from where it started)");
+        } else if (now - lastSyncTrace >= SYNC_TRACE_MS) {
+            lastSyncTrace = now;
+            trace("sync (live): " + gap + " ms behind the live edge (" + behind + " ms from where it started), "
+                    + (player.getBufferedPosition() - player.getCurrentPosition()) + " ms loaded");
+        }
+    }
+
+    /** what kind of HLS the phone serves, once per video: live or not, segment and part lengths, hold-back, clock */
+    static void logManifest() {
+        if (player == null) return;
+        Object m = player.getCurrentManifest();
+        if (!(m instanceof com.google.android.exoplayer2.source.hls.HlsManifest)) return;
+        manifestLogged = true;
+        try {
+            com.google.android.exoplayer2.source.hls.playlist.HlsMediaPlaylist p = ((com.google.android.exoplayer2.source.hls.HlsManifest) m).mediaPlaylist;
+            log("video: HLS " + (p.hasEndTag ? "on demand" : "live") + ", segments " + us(p.targetDurationUs) + ", parts " + us(p.partTargetDurationUs)
+                    + ", hold-back " + us(p.serverControl.holdBackUs) + " / part hold-back " + us(p.serverControl.partHoldBackUs)
+                    + ", blocking reload " + (p.serverControl.canBlockReload ? "yes" : "no") + ", " + (p.hasProgramDateTime ? "with" : "no") + " program date-time");
+        } catch (Throwable t) {
+            log("video: HLS playlist not read: " + t);
+        }
+    }
+
+    static String us(long v) {
+        return v == C.TIME_UNSET ? "none" : v / 1000 + " ms";
+    }
+
     // ---- the head unit's other screens: the video goes when CarPlay's screen does ----
+
+    /**
+     * the home key: the borrowed screen is the launcher's (it's on top under the video, 2026-11-17), so home
+     * changes no activity; Android tells every app with ACTION_CLOSE_SYSTEM_DIALOGS, reason "homekey"
+     */
+    static void watchHomeKey() {
+        try {
+            context.registerReceiver(new android.content.BroadcastReceiver() {
+                @Override
+                public void onReceive(Context c, android.content.Intent i) {
+                    String reason = i.getStringExtra("reason");
+                    trace("screen: close system dialogs (" + reason + ")" + (shown ? ", video shown" : ""));
+                    if (shown && now() - shownAt > SETTLE_MS && ("homekey".equals(reason) || "recentapps".equals(reason))) hide("the " + reason + " key");
+                }
+            }, new android.content.IntentFilter(android.content.Intent.ACTION_CLOSE_SYSTEM_DIALOGS));
+        } catch (Throwable t) {
+            log("video: home key not watched: " + t);
+        }
+    }
 
     static final long WATCH_MS = 1000, LEFT_MS = 400, SETTLE_MS = 1500;
     /** the activity on top once the video was shown (CarPlay's), null before SETTLE_MS or if it can't be read */
@@ -1005,7 +1142,9 @@ public final class Video {
                 if (started == 0 && main != null) main.postDelayed(new Runnable() {
                     @Override
                     public void run() {
-                        if (shown && started == 0 && now() - shownAt > SETTLE_MS) hide("CarPlay's screen stopped");
+                        // DiPO's activity stops ~1 s after every show (the borrowed screen is the launcher's, 2026-11-17),
+                        // so this is only for a head unit where the top activity can't be read
+                        if (shown && started == 0 && now() - shownAt > SETTLE_MS && topActivity() == null) hide("CarPlay's screen stopped");
                     }
                 }, LEFT_MS);
             }
@@ -1047,6 +1186,9 @@ public final class Video {
         // error): nothing changes there, so the phone is told here, or its sound would play on
         boolean moving = player != null && player.isPlaying();
         want(false);
+        // a live video closed: stop loading it (2026-11-17 it went on loading through the phone, 22 s ahead, for
+        // nothing: the sound had moved on). Shown again, it starts from the live edge (show)
+        if (player != null && player.isCurrentMediaItemLive()) player.stop();
         if (player != null && !moving) tellPhonePaused("closed while not playing");
         if (controls != null) {
             controls.stop();
