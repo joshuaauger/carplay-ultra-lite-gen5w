@@ -17,6 +17,9 @@ Two stages, so the first can run on a CI runner that has no manufacturer files:
   build.py <stock libCarPlayCore.so> <HMG-API source> <out dir> [variant]
       Both, the build picked by the library's MD5.
 
+  build.py list                       the builds CI makes a segment for, as JSON (the CI matrix)
+  build.py verify <build> <out dir>   CI: the committed recipe matches the segment just built
+
 <build> is the first 8 digits of the library's MD5 (BUILDS below). Library copies from a car are
 never committed: the recipe holds hashes and our own bytes only."""
 import hashlib, json, os, struct, subprocess, sys
@@ -271,12 +274,42 @@ def stage_recipe(stock_path, hmgapi, out, variant):
     print(name)
 
 
+def ci_builds():
+    """the builds the segment can be made for without a library (their PLT addresses are listed)"""
+    return [k for k, b in BUILDS.items() if b["plt"] is not None]
+
+
+def stage_verify(build, out):
+    """the committed recipe for <build> carries the segment the sources build now, and mod.json lists it"""
+    b = BUILDS[build]
+    recipe = R / "mod/recipes" / f"{b['recipe_id']}.recipe"
+    if not recipe.is_file():
+        sys.exit(f"{build}: no recipe yet. Download this run's cp-climate-segment-{build} artifact and run\n"
+                 f"  python3 source/tools/build.py recipe <that car's stock libCarPlayCore.so> <HMG-API checkout> <artifact dir>\n"
+                 f"then commit <artifact dir>/{recipe.name} as source/mod/recipes/{recipe.name} and list it in mod.json")
+    seg = [l.split() for l in recipe.read_text().splitlines() if l.startswith("segment ")]
+    code = (out / "segment.bin").read_bytes()
+    if len(seg) != 1 or bytes.fromhex(seg[0][2]) != code:
+        sys.exit(f"{build}: {recipe.name} was made from a different segment than native/ builds now: "
+                 "make the recipe again from this run's segment artifact (see the README)")
+    listed = json.loads((R / "mod/mod.json").read_text())["hooks"]["native"]["libCarPlayCore.so"]
+    if f"recipes/{recipe.name}" not in listed:
+        sys.exit(f"{build}: recipes/{recipe.name} isn't in mod.json's hooks.native")
+    print(f"{build}: {recipe.name} matches the segment ({len(code)} bytes) and is listed in mod.json")
+
+
 def main():
     a = sys.argv[1:]
     stock = None
     if "--stock" in a:
         k = a.index("--stock"); stock = a[k + 1]; del a[k:k + 2]
-    if a and a[0] == "seg":
+    if a == ["list"]:
+        print(json.dumps(ci_builds()))                 # the CI matrix
+    elif a and a[0] == "verify":
+        if len(a) != 3 or a[1] not in BUILDS:
+            sys.exit("usage: build.py verify <build> <seg out dir>")
+        stage_verify(a[1], Path(a[2]))
+    elif a and a[0] == "seg":
         if len(a) < 3 or a[1] not in BUILDS:
             sys.exit("usage: build.py seg <" + "|".join(BUILDS) + "> <out dir> [variant] [--stock lib]")
         stage_seg(a[1], Path(a[2]), a[3] if len(a) > 3 else "full", stock)

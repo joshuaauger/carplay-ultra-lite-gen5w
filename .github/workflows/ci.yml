@@ -1,7 +1,9 @@
 # CI: HMG-API's mod workflow (hook points, build, a package signed with a throwaway key: a test
-# build) with the SDK hmgapi-sdk.json pins, and the native code segment for libCarPlayCore builds.
-# The segment needs no library from a car; the memory recipe is made from it locally
-# (source/tools/build.py recipe), because that step reads the stock library.
+# build) with the SDK hmgapi-sdk.json pins, and the native code segment for every libCarPlayCore
+# build listed in source/tools/build.py (BUILDS), so a new car/firmware is one entry there.
+# The segment needs no library from a car. The memory recipe is made from it locally
+# (source/tools/build.py recipe, which reads the stock library) and committed; the "segment" job
+# fails if a build has no recipe, or its recipe was made from other sources than these.
 name: CI
 
 on:
@@ -19,11 +21,24 @@ jobs:
     with:
       mods: source/mod
 
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      builds: ${{ steps.list.outputs.builds }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: list
+        run: echo "builds=$(python3 source/tools/build.py list)" >> "$GITHUB_OUTPUT"
+
   segment:
+    needs: plan
     runs-on: ubuntu-24.04
     strategy:
+      fail-fast: false
       matrix:
-        build: [ef49c09b]
+        build: ${{ fromJSON(needs.plan.outputs.builds) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -39,9 +54,12 @@ jobs:
       - name: Segment for libCarPlayCore ${{ matrix.build }}
         run: python3 source/tools/build.py seg "${{ matrix.build }}" "out/seg-${{ matrix.build }}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
         with:
           name: cp-climate-segment-${{ matrix.build }}
           path: |
             out/seg-${{ matrix.build }}/segment.bin
             out/seg-${{ matrix.build }}/segment.json
           retention-days: 30
+      - name: The committed recipe matches this segment and mod.json lists it
+        run: python3 source/tools/build.py verify "${{ matrix.build }}" "out/seg-${{ matrix.build }}"
