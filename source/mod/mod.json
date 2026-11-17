@@ -1,7 +1,7 @@
 {
   "id": "cp-climate",
   "name": "CarPlay Ultra-Lite",
-  "version": "1.1.8",
+  "version": "1.1.9",
   "hmgapi": ">=1.0.0",
   "authors": [
     "cp-climate contributors"
@@ -57,6 +57,30 @@
           "7130-7135"
         ],
         "action": "accept"
+      },
+      {
+        "chain": "output",
+        "out": "hotspot",
+        "proto": "tcp",
+        "state": [
+          "new",
+          "established"
+        ],
+        "action": "accept",
+        "when": "settings.video_playback",
+        "comment": "video: connect to the phone's proxy (random port)"
+      },
+      {
+        "chain": "input",
+        "in": "hotspot",
+        "proto": "tcp",
+        "state": [
+          "established",
+          "related"
+        ],
+        "action": "accept",
+        "when": "settings.video_playback",
+        "comment": "video: the proxy's replies"
       }
     ]
   }

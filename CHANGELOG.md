@@ -2,6 +2,10 @@
 
 Versions after 1.0.0 are test builds running on one car (Hyundai Ioniq 6, US, firmware 260507). 1.3.3 is published as a test build (an update for a car on 1.0.0); the main release is still 1.0.0.
 
+## 1.1.9 (2026-11-16, fork: Ioniq 6 CEEV 260903)
+
+- **Video on cars with the whitelist firewall (Ioniq 6):** the video engine connects out to the iPhone's video proxy, on a port the phone picks each time; the stock firewall drops outgoing traffic on the hotspot, so playback failed with "tunnel: failed to connect … after 8000ms" and the car stayed on Now Playing. Two network rules (only while "Video playback in CarPlay" is on): outgoing TCP to the hotspot's addresses, and the replies.
+
 ## 1.3.3 (2026-11-10, in testing)
 
 - **Experiment "Only CarPlay's volume slider in CarPlay"** (off by default): while CarPlay is on the screen, the volume knob and the steering wheel's volume buttons change the volume without the head unit's volume pop-up, so only CarPlay's slider shows.
