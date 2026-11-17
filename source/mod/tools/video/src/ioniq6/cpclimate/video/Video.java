@@ -21,6 +21,8 @@ import com.google.android.exoplayer2.audio.AudioAttributes;
 import com.google.android.exoplayer2.source.MediaSource;
 import com.google.android.exoplayer2.source.ProgressiveMediaSource;
 import com.google.android.exoplayer2.source.hls.HlsMediaSource;
+import com.google.android.exoplayer2.upstream.DefaultBandwidthMeter;
+import com.google.android.exoplayer2.upstream.DefaultLoadErrorHandlingPolicy;
 import com.google.android.exoplayer2.video.VideoSize;
 
 import java.io.File;
@@ -61,6 +63,12 @@ public final class Video {
     static long streamId = -1;
     static boolean shown;
     static String currentUrl;
+    /** where the phone's sound is: the picture follows it (Sync) */
+    static final Sync sync = new Sync();
+    /** a load error being retried (retries of MAX_RETRIES since the video last played) */
+    static int retries;
+    static boolean retrying;
+    static final int MAX_RETRIES = 5;
 
     // ---- entry points (reflection from the core) ----
 
@@ -91,6 +99,7 @@ public final class Video {
                             public void run() {
                                 try {
                                     send(error(ERROR_INCOMPATIBLE_ASSET));
+                                    tellPhonePaused("error in the player");
                                     stop("error in the player");
                                 } catch (Throwable ignored) {
                                 }
@@ -109,6 +118,8 @@ public final class Video {
     }
 
     static boolean noPicture, noSound;
+    static final int LOAD_RETRIES = 8;
+    static final long START_BITRATE = 1500000L;
 
     /**
      * settings video_no_picture (no picture decoder) and video_sound off (no sound renderer). Without sound the
@@ -200,10 +211,13 @@ public final class Video {
             insert(m);
         } else if ("setRate".equals(type)) {
             double rate = number(m.get("rate"), 0);
-            if (player != null) player.setPlayWhenReady(rate > 0);
+            want(rate > 0);
         } else if ("seek".equals(type)) {
             Long ms = cmMillis(m.get("time"));
-            if (player != null && ms != null) player.seekTo(ms);
+            if (player != null && ms != null) {
+                player.seekTo(ms);
+                sync.seek(ms, now());
+            }
         } else if ("stop".equals(type) || "removePlayQueueItem".equals(type)) {
             stop("phone: " + type);
         }
@@ -244,9 +258,15 @@ public final class Video {
         String path = Uri.parse(url).getPath() == null ? "" : Uri.parse(url).getPath().toLowerCase(java.util.Locale.US);
         boolean progressive = !(path.endsWith(".m3u8") || path.endsWith(".m3u") || lower.contains(".m3u8?") || lower.contains("format=m3u8"));
         MediaItem media = MediaItem.fromUri(url);
-        MediaSource source = progressive ? new ProgressiveMediaSource.Factory(data).createMediaSource(media)
-                : new HlsMediaSource.Factory(data).setAllowChunklessPreparation(true).createMediaSource(media);
+        // on mobile data a load fails now and then: retried LOAD_RETRIES times (1 s more between each, at most 5 s)
+        // before the player gives up, then the player itself is retried (onPlayerError)
+        DefaultLoadErrorHandlingPolicy retry = new DefaultLoadErrorHandlingPolicy(LOAD_RETRIES);
+        MediaSource source = progressive ? new ProgressiveMediaSource.Factory(data).setLoadErrorHandlingPolicy(retry).createMediaSource(media)
+                : new HlsMediaSource.Factory(data).setAllowChunklessPreparation(true).setLoadErrorHandlingPolicy(retry).createMediaSource(media);
         release();
+        sync.reset();
+        retries = 0;
+        retrying = false;
         subtitleChoice = -1;
         if (controls != null) controls.setSubtitle(null);
         com.google.android.exoplayer2.DefaultRenderersFactory renderers = new Renderers(context);
@@ -257,10 +277,15 @@ public final class Video {
                 .setTargetBufferBytes(64 * 1024 * 1024)
                 .setPrioritizeTimeOverSizeThresholds(true)
                 .build();
+        // HLS starts on a low quality (the head unit's network reads as Wi-Fi, but it's the phone's mobile data)
+        // and steps up as the measured speed allows; a progressive file has one quality
+        DefaultBandwidthMeter meter = new DefaultBandwidthMeter.Builder(context).setInitialBitrateEstimate(START_BITRATE).build();
         player = new ExoPlayer.Builder(context, renderers.setEnableDecoderFallback(true))
                 .setLoadControl(load)
+                .setBandwidthMeter(meter)
                 .setLooper(Looper.getMainLooper()).build();
         startCpuTrace();
+        startSync();
         // subtitles start off; the CC button turns them on (one text track at a time)
         player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build());
@@ -404,6 +429,11 @@ public final class Video {
     static final Player.Listener listener = new Player.Listener() {
         @Override
         public void onIsPlayingChanged(boolean isPlaying) {
+            // the sound and the picture start together: from here the picture follows the sound's clock
+            if (isPlaying && !sync.started && player != null) {
+                sync.start(player.getCurrentPosition(), now());
+                trace("sync: started at " + player.getCurrentPosition() / 1000 + " s");
+            }
             // stopped only to buffer: still playing as far as the phone is concerned (a "paused" made it pause, 2026-11-11)
             if (!isPlaying && player != null && player.getPlayWhenReady() && player.getPlayerError() == null
                     && player.getPlaybackState() != Player.STATE_ENDED) {
@@ -422,17 +452,45 @@ public final class Video {
         public void onPlaybackStateChanged(int state) {
             log("video: player " + (state == Player.STATE_BUFFERING ? "buffering" : state == Player.STATE_READY ? "ready"
                     : state == Player.STATE_ENDED ? "ended" : "idle"));
+            if (state == Player.STATE_READY) {
+                if (retrying) log("video: loading again after " + retries + (retries == 1 ? " retry" : " retries"));
+                retries = 0;
+                retrying = false;
+            }
             updateStatus();
         }
 
         @Override
-        public void onPlayerError(PlaybackException e) {
+        public void onPlayerError(final PlaybackException e) {
             Throwable c = e.getCause();
             log("video: player error " + e.getErrorCodeName() + ": " + e.getMessage() + (c != null ? " / " + c : ""));
+            // the network (mobile data through the phone): try again from where it was, 1, 2, 4, 8, 16 s later.
+            // Meanwhile the phone hears nothing: its sound goes on, and the picture catches up after (Sync)
+            if (recoverable(e) && retries < MAX_RETRIES && player != null) {
+                final ExoPlayer p = player;
+                long delay = 1000L << retries;
+                retries++;
+                retrying = true;
+                log("video: retrying in " + delay / 1000 + " s (" + retries + " of " + MAX_RETRIES + ")");
+                main.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (player != p || p.getPlayerError() == null) return;
+                        if (e.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) p.seekToDefaultPosition();
+                        p.prepare();
+                    }
+                }, delay);
+                updateStatus();
+                return;
+            }
+            retrying = false;
             int code = e.errorCode >= 2000 && e.errorCode < 3000 ? ERROR_NETWORK
                     : e.errorCode >= 4000 && e.errorCode < 5000 ? ERROR_DECODER : ERROR_INCOMPATIBLE_ASSET;
             if (e.errorCode >= 6000 && e.errorCode < 7000) code = ERROR_INCOMPATIBLE_ASSET;   // DRM (FairPlay)
             send(error(code));
+            // the error alone doesn't stop the phone's sound (it played on with the car showing an error, often
+            // when the error came while loading, so the car's "paused" was never sent): say so outright
+            tellPhonePaused("the video can't play");
             updateStatus();
         }
 
@@ -607,7 +665,7 @@ public final class Video {
         controls.show();
         shown = true;
         if (player != null) {
-            player.setPlayWhenReady(true);
+            want(true);
             VideoSize s = player.getVideoSize();
             if (s.width > 0) layoutSurface(s.width, s.height, s.pixelWidthHeightRatio);
         }
@@ -625,7 +683,7 @@ public final class Video {
         @Override
         public void playPause() {
             // the phone hears it as a playbackState notification (the listener below), as with its own setRate
-            if (player != null) player.setPlayWhenReady(!player.getPlayWhenReady());
+            if (player != null) want(!player.getPlayWhenReady());
         }
 
         @Override
@@ -633,7 +691,9 @@ public final class Video {
             // as LIVI does: the car seeks, and the phone reads the new position from its next playbackInfo
             if (player == null) return;
             long d = durationMs();
-            player.seekTo(Math.max(0, d > 0 ? Math.min(ms, d) : ms));
+            long to = Math.max(0, d > 0 ? Math.min(ms, d) : ms);
+            player.seekTo(to);
+            sync.seek(to, now());
             trace("seek to " + ms / 1000 + " s (on the car)");
         }
 
@@ -675,7 +735,8 @@ public final class Video {
         s.wanted = player.getPlayWhenReady();
         s.loading = state == Player.STATE_BUFFERING || (state == Player.STATE_IDLE && player.getPlayerError() == null);
         PlaybackException e = player.getPlayerError();
-        if (e != null) s.error = e.errorCode >= 4000 && e.errorCode < 5000 ? "This head unit can't decode this video"
+        if (retrying) s.loading = true;
+        else if (e != null) s.error = e.errorCode >= 4000 && e.errorCode < 5000 ? "This head unit can't decode this video"
                 : e.errorCode >= 2000 && e.errorCode < 3000 ? "Can't load the video through the phone" : "Can't play this video";
         int[] text = textTracks();
         s.hasSubtitles = text.length > 0;
@@ -784,6 +845,81 @@ public final class Video {
         surface.setLayoutParams(new FrameLayout.LayoutParams(vw, vh, Gravity.CENTER));
     }
 
+    // ---- playing, pausing and following the phone's sound ----
+
+    static long now() {
+        return android.os.SystemClock.elapsedRealtime();
+    }
+
+    /** play or pause, from the phone (setRate) or the car's controls; the sound's clock holds while paused */
+    static void want(boolean play) {
+        if (player == null) return;
+        player.setPlayWhenReady(play);
+        if (play) sync.resume(now());
+        else sync.pause(now());
+    }
+
+    /** a playbackState "paused" notification: the phone pauses its sound (as it did for a stall, 2026-11-11) */
+    static void tellPhonePaused(String why) {
+        Map<String, Object> n = new LinkedHashMap<String, Object>();
+        n.put("type", "playbackState");
+        n.put("name", "paused");
+        send(n);
+        log("video: told the phone it's paused (" + why + ")");
+    }
+
+    /**
+     * network errors, worth trying again: not the decoder's or the file's, and not an answer from the server
+     * (a bad HTTP status such as an expired link, no file, no permission: 2004 and up), which a retry won't change
+     */
+    static boolean recoverable(PlaybackException e) {
+        return e.errorCode >= 2000 && e.errorCode < PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+                || e.errorCode == PlaybackException.ERROR_CODE_TIMEOUT
+                || e.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW;
+    }
+
+    static boolean syncing;
+    static long lastSyncTrace;
+    static float lastSpeed = 1f;
+    static final long SYNC_MS = 500, SYNC_TRACE_MS = 5000;
+
+    static void startSync() {
+        if (syncing || main == null) return;
+        syncing = true;
+        main.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (player == null) {
+                    syncing = false;
+                    return;
+                }
+                try {
+                    followSound();
+                } catch (Throwable ignored) {
+                }
+                main.postDelayed(this, SYNC_MS);
+            }
+        }, SYNC_MS);
+    }
+
+    /** twice a second: the picture's speed (or a jump) to keep it with the sound, and a trace line every 5 s */
+    static void followSound() {
+        long now = now();
+        boolean moving = player.isPlaying();
+        Sync.Step st = sync.step(now, player.getCurrentPosition(), player.getBufferedPosition(), moving);
+        if (st.seekTo >= 0) {
+            trace("sync: picture " + st.behind + " ms behind the sound, jumping to " + st.seekTo / 1000 + " s (loaded)");
+            player.seekTo(st.seekTo);
+        }
+        if (player.getPlaybackParameters().speed != st.speed) player.setPlaybackSpeed(st.speed);
+        boolean changed = (st.speed == 1f) != (lastSpeed == 1f);
+        lastSpeed = st.speed;
+        if (sync.started && (changed || now - lastSyncTrace >= SYNC_TRACE_MS)) {
+            lastSyncTrace = now;
+            trace("sync: picture " + st.behind + " ms behind the sound, speed " + st.speed + (moving ? "" : " (not moving)"));
+        }
+    }
+
     static void updateStatus() {
         if (controls == null) return;
         try {
@@ -794,7 +930,11 @@ public final class Video {
 
     /** back to CarPlay: video paused, window hidden, the screen given back */
     static void hide(String why) {
-        if (player != null) player.setPlayWhenReady(false);
+        // paused while playing: the phone hears "paused" from onIsPlayingChanged. Not playing (loading, an
+        // error): nothing changes there, so the phone is told here, or its sound would play on
+        boolean moving = player != null && player.isPlaying();
+        want(false);
+        if (player != null && !moving) tellPhonePaused("closed while not playing");
         if (controls != null) {
             controls.stop();
             controls.root.setVisibility(View.GONE);
@@ -807,6 +947,8 @@ public final class Video {
 
     static void stop(String why) {
         release();
+        sync.reset();
+        retrying = false;
         if (shown) hide(why);
         itemUuid = null;
         currentUrl = null;

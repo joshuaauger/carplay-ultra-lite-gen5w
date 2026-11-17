@@ -28,6 +28,7 @@ main README. Everything here was built and tested on one car: a **Hyundai Ioniq 
 | Video: playback through the phone's proxy | Plays picture only in the car (1.1.6), with pauses to load. 1.1.7 loads each segment over several connections; not yet tried with video |
 | Video: sound | Works in the car with `video_sound` off (the default). The car's player then has no sound of its own, so the sound most likely comes from the phone over CarPlay's normal audio; `video_sound` would add the car's own copy (not needed) |
 | Video: controls (1.1.10) | Close, play/pause, 10 s skip, seek bar, picture fit (fit, fill, stretch), subtitles; drawn in code, since the hook jar carries no Android resources. Not yet tried in the car |
+| Video: keeping the picture with the phone's sound (1.1.13) | `Sync`: a clock of the sound's position (moved by pauses and seeks); a picture behind plays up to 1.25× fast, more than 8 s behind jumps when loaded. Network errors retried; the phone told "paused" after a fatal error. Assumes the phone's sound follows the car's own seeks. Not yet tried in the car |
 | Video: the phone's settings and overlay streams (1.1.10) | Decrypted and recorded in `files/cpc-video-side/<session>/` (ports 7138, 7139); what they carry isn't known yet. ef49c09b recipe only. From 1.1.11 the `video-usb` service copies them, with the video trace, to a USB stick that has a `CarPlayUltraLite-Video` folder |
 
 ## Layout
@@ -199,7 +200,7 @@ cc -w -DCPC_HOST_TEST -DDIR=\"/tmp/ht/\" -DVSPI=\"source/data/vspi.bplist\" -I s
 python3 source/mod/tools/video/check/api19.py classes.dex android-19/android.jar     # Android 4.4 API gaps
 ```
 
-`mod/tools/video/tests` has host tests for the proxy handshake and the HTTP tunnel. They run against a local
+`mod/tools/video/tests` has host tests for the proxy handshake and the HTTP tunnel. `SyncTest` (plain Java: `javac -d out src/ioniq6/cpclimate/video/Sync.java tests/ioniq6/cpclimate/video/SyncTest.java`) checks the picture following the sound. They run against a local
 BouncyCastle PSK server standing in for the phone.
 
 ## Credits and licence
