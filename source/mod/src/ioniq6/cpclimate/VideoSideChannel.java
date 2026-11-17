@@ -9,6 +9,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -21,8 +22,11 @@ import java.util.Map;
  * The native SETUP handler gives them ports 7138 and 7139 with their keys in files/cpc-vs-4.key and
  * cpc-vs-5.key. This decrypts them like the iAP stream (IapChannel), answers each sync package with an empty
  * reply, and records every package: its decoded form (OPACK, or a bplist, or OPACK holding a bplist as LIVI's
- * describe_setting reads them) in files/cpc-video-side/&lt;name&gt;.txt, and its raw body as a numbered .bin
- * beside it. Nothing is acted on.
+ * describe_setting reads them) in files/cpc-video-side/&lt;session&gt;/&lt;name&gt;.txt, and its raw body as a
+ * numbered .bin beside it. Nothing is acted on. A session is one start of CarPlay's process, numbered (0001-, 0002-,
+ * then its start time as a label: the clock can still read 2015 that early after boot), so a restart doesn't
+ * overwrite what was recorded; the newest KEEP_SESSIONS are kept. The mod's service
+ * (svc/video-usb.sh) copies them to a USB stick that has a CarPlayUltraLite-Video folder.
  */
 final class VideoSideChannel extends Thread {
     static final String DIR = "cpc-video-side";
@@ -30,6 +34,9 @@ final class VideoSideChannel extends Thread {
     static final long MAX_TEXT = 2L * 1024 * 1024;
     static final int MAX_DESCRIBED = 4000;     // characters of a decoded package in the text file
     static final int MAX_LOGGED = 40;          // packages per stream in the HMG-API log
+    static final int KEEP_SESSIONS = 5;
+    /** this process's folder name, made on first use (session()) */
+    static String session;
 
     final File dir, out;
     final VsChannel.Log log;
@@ -205,6 +212,46 @@ final class VideoSideChannel extends Thread {
         }
     }
 
+    /**
+     * This process's session folder: one more than the highest number there. Made once per process, when the old
+     * ones are pruned too: the oldest go so KEEP_SESSIONS stay with this one, and 1.1.10's loose files go.
+     */
+    static synchronized String session(File root) {
+        if (session != null) return session;
+        String[] names = root.list();
+        if (names == null) names = new String[0];
+        java.util.Arrays.sort(names);
+        int top = 0;
+        List<File> folders = new java.util.ArrayList<File>();
+        for (String n : names) {
+            File f = new File(root, n);
+            int num = number(n);
+            if (f.isDirectory() && num > 0) {
+                folders.add(f);
+                top = Math.max(top, num);
+            } else if (f.isFile()) {
+                f.delete();
+            }
+        }
+        for (int i = 0; i < folders.size() - (KEEP_SESSIONS - 1); i++) {
+            File[] in = folders.get(i).listFiles();
+            if (in != null) for (File x : in) x.delete();
+            folders.get(i).delete();
+        }
+        session = String.format(Locale.US, "%04d-%s", top + 1, new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()));
+        return session;
+    }
+
+    /** a session folder's number (its first four digits), 0 if it isn't one */
+    static int number(String n) {
+        if (n.length() < 5 || n.charAt(4) != '-') return 0;
+        try {
+            return Integer.parseInt(n.substring(0, 4));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
     static String clip(String s, int n) {
         return s.length() <= n ? s : s.substring(0, n) + "…";
     }
@@ -214,8 +261,9 @@ final class VideoSideChannel extends Thread {
     /** a line in <name>.txt and, for a package, its body as <name>-NNNN-<kind>-<type>.bin (both 0600) */
     synchronized void record(String line, byte[] body, int kind, int type) {
         try {
-            if (!out.isDirectory() && !out.mkdirs()) return;
-            File text = new File(out, name + ".txt");
+            File here = new File(out, session(out));
+            if (!here.isDirectory() && !here.mkdirs()) return;
+            File text = new File(here, name + ".txt");
             if (text.length() < MAX_TEXT) {
                 String stamp;
                 synchronized (STAMP) {
@@ -231,7 +279,7 @@ final class VideoSideChannel extends Thread {
                 text.setReadable(true, true);
             }
             if (body != null && saved < MAX_FILES) {
-                File bin = new File(out, String.format(Locale.US, "%s-%04d-%s-%s.bin", name, saved++, VsChannel.tag(kind), VsChannel.tag(type)));
+                File bin = new File(here, String.format(Locale.US, "%s-%04d-%s-%s.bin", name, saved++, VsChannel.tag(kind), VsChannel.tag(type)));
                 FileOutputStream f = new FileOutputStream(bin);
                 try {
                     f.write(body);
