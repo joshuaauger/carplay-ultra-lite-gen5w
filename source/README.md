@@ -35,7 +35,9 @@ mod/                    the HMG-API mod package source
   mod.json              id, version, systems, hook points, native recipe, network rules
   settings.json         settings shown in the HMG-API app (table below)
   build.sh              package step run by HMG-API's mkmodpkg.sh: merges the video engine into hooks.jar
-  recipes/              carplay-climate-m1.recipe: libCarPlayCore.so memory patch (built by tools/build.py)
+  recipes/              libCarPlayCore.so memory patches, one per library build (made by tools/build.py):
+                        carplay-climate-m1.recipe (d3a47296: US 260507, CAN 250818/260206) and
+                        carplay-climate-m1-ef49c09b.recipe (CEEV.CAN 260903, not tried on a car yet)
   src/ioniq6/cpclimate/ the Java hooks loaded into DiPO (the CarPlay receiver app)
   tools/video/          the video engine (ExoPlayer, BouncyCastle TLS), merged into hooks.jar by build.sh
     fetch-libs.sh       downloads its libraries and R8 (not kept in git) and checks their SHA-256
@@ -160,9 +162,13 @@ Packages you build are signed with your key, so HMG-API won't update a copy sign
 # 1. the video engine's libraries (about 32 MB, SHA-256 checked)
 sh source/mod/tools/video/fetch-libs.sh
 
-# 2. only if native/ changed: rebuild the recipe from the stock library pulled from your head unit
-python3 source/tools/build.py <stock libCarPlayCore.so> <HMG-API checkout> <out dir> full
-cp <out dir>/carplay-climate-m1.recipe source/mod/recipes/
+# 2. only if native/ changed: rebuild the recipe from the stock library pulled from your head unit.
+#    Two stages: "seg" needs clang, ld.lld and pyelftools but no library (CI runs it: the
+#    cp-climate-segment-<build> artifact); "recipe" needs the library and Python only.
+python3 source/tools/build.py seg <build, e.g. ef49c09b> <out dir>
+python3 source/tools/build.py recipe <stock libCarPlayCore.so> <HMG-API checkout> <out dir>
+cp <out dir>/carplay-climate-m1-<build>.recipe source/mod/recipes/
+# (a new libCarPlayCore build gets its own entry in BUILDS in tools/build.py)
 
 # 3. the package: copy the mod into HMG-API's mods folder and run its packager
 rsync -a --delete source/mod/ <HMG-API checkout>/mods/cp-climate/
