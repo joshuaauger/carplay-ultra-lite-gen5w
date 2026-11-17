@@ -578,8 +578,6 @@ public final class Video {
             window.setBackgroundColor(Color.BLACK);
             surface = new SurfaceView(context);
             window.addView(surface, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
-            controls = new Controls(context, main, actions);
-            window.addView(controls.root, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
             WindowManager.LayoutParams lp = new WindowManager.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.TYPE_SYSTEM_ALERT,
                     WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
@@ -587,12 +585,25 @@ public final class Video {
             lp.gravity = Gravity.TOP | Gravity.LEFT;
             lp.setTitle("cp-climate video");
             wm.addView(window, lp);
+            // The controls get a window of their own, added after (so above) the picture's. In the picture's
+            // window they were covered once the first frame came: the head unit's compositor puts a video
+            // SurfaceView's layer over its own window's drawing, so close, play/pause and the seek bar
+            // vanished with no way back to CarPlay. A separate translucent window is always composited above.
+            controls = new Controls(context, main, actions);
+            WindowManager.LayoutParams cl = new WindowManager.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.TYPE_SYSTEM_ALERT,
+                    WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                    PixelFormat.TRANSLUCENT);
+            cl.gravity = Gravity.TOP | Gravity.LEFT;
+            cl.setTitle("cp-climate video controls");
+            wm.addView(controls.root, cl);
             if (player != null) player.setVideoSurfaceView(surface);
         } else {
             controls.start();
         }
         fit = readFit();
         window.setVisibility(View.VISIBLE);
+        controls.root.setVisibility(View.VISIBLE);
         controls.show();
         shown = true;
         if (player != null) {
@@ -784,7 +795,10 @@ public final class Video {
     /** back to CarPlay: video paused, window hidden, the screen given back */
     static void hide(String why) {
         if (player != null) player.setPlayWhenReady(false);
-        if (controls != null) controls.stop();
+        if (controls != null) {
+            controls.stop();
+            controls.root.setVisibility(View.GONE);
+        }
         if (window != null) window.setVisibility(View.GONE);
         shown = false;
         log("video: hidden (" + why + ")");

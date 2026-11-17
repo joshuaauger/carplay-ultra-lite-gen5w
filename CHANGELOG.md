@@ -2,6 +2,10 @@
 
 Versions after 1.0.0 are test builds running on one car (Hyundai Ioniq 6, US, firmware 260507). 1.3.3 is published as a test build (an update for a car on 1.0.0); the main release is still 1.0.0.
 
+## 1.1.12 (2026-11-17, fork: Ioniq 6 CEEV 260903, not yet tried in the car)
+
+- **Fix: the video controls vanished once the video started**, leaving no way back to CarPlay. The head unit draws the video's picture over everything else in its window, so the controls now have a window of their own above the picture's: close, play/pause, skip and the seek bar stay reachable, and a tap brings them back after they fade.
+
 ## 1.1.11 (2026-11-17, fork: Ioniq 6 CEEV 260903, not yet tried in the car)
 
 - **Video recordings on the USB stick:** make a folder named `CarPlayUltraLite-Video` at the top of a USB stick and leave it plugged in. Every 30 seconds the mod copies the phone's recorded settings and overlay streams into `side/` and the video engine's trace into `trace/`. Only sticks with that folder get anything; nothing is read from the stick.
