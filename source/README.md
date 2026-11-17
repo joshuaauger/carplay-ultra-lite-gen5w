@@ -26,7 +26,9 @@ main README. Everything here was built and tested on one car: a **Hyundai Ioniq 
 | Climate off: last setpoint instead of the car's 17.0 | Works in the car. `blank_when_off` ("no value") is ignored by the phone |
 | Video: the phone's video messages reach the head unit and are answered | Works in the car (1.0.5) |
 | Video: playback through the phone's proxy | Plays picture only in the car (1.1.6), with pauses to load. 1.1.7 loads each segment over several connections; not yet tried with video |
-| Video: sound | Not working: the head unit has no audio output for CarPlay's app process (`video_sound`, off by default) |
+| Video: sound | Works in the car with `video_sound` off (the default). The car's player then has no sound of its own, so the sound most likely comes from the phone over CarPlay's normal audio; `video_sound` would add the car's own copy (not needed) |
+| Video: controls (1.1.10) | Close, play/pause, 10 s skip, seek bar, picture fit (fit, fill, stretch), subtitles; drawn in code, since the hook jar carries no Android resources. Not yet tried in the car |
+| Video: the phone's settings and overlay streams (1.1.10) | Decrypted and recorded in `files/cpc-video-side/` (ports 7138, 7139); what they carry isn't known yet. ef49c09b recipe only |
 
 ## Layout
 

@@ -971,6 +971,8 @@ CFS(K_vpOverlay, "E3DC3EA6-E6C3-4B30-847C-B7ACFEBEA654");
 #define CPC_IAP_PORT 7133   /* lane 2, the iAP stream (7132 is the Ultra cluster's) */
 #define CPC_VP_PORT 7134    /* the videoPlayback experiment's streams: the Java side reads them and throws them away */
 #define CPC_SYNC_PORT 7135  /* lane 3, the uiSync stream */
+#define CPC_VPS_PORT 7138   /* lane 4, the videoPlayback settings stream: the Java side decrypts and records it */
+#define CPC_VPO_PORT 7139   /* lane 5, the videoPlayback overlay stream: the same */
 
 /* the lane's keys for the Java side, before the phone can connect: the seed (8 bytes, little-endian),
  * the key to read the phone with (DataStream-Output-Encryption-Key), the key to write with (-Input-) */
@@ -979,7 +981,8 @@ static int save_keys(int lane, unsigned long long seed, const unsigned char *rd,
     unsigned lo = (unsigned)seed, hi = (unsigned)(seed >> 32);   /* 32-bit shifts: no libgcc helpers here */
     for (int i = 0; i < 4; i++) { buf[i] = (unsigned char)(lo >> (8 * i)); buf[4 + i] = (unsigned char)(hi >> (8 * i)); }
     for (int i = 0; i < 32; i++) { buf[8 + i] = rd[i]; buf[40 + i] = wr[i]; }
-    long fd = sys_open(lane == 3 ? DIR "cpc-vs-3.key" : lane == 2 ? DIR "cpc-vs-2.key" : lane ? DIR "cpc-vs-1.key" : DIR "cpc-vs-0.key", 0600);
+    long fd = sys_open(lane == 5 ? DIR "cpc-vs-5.key" : lane == 4 ? DIR "cpc-vs-4.key" : lane == 3 ? DIR "cpc-vs-3.key"
+        : lane == 2 ? DIR "cpc-vs-2.key" : lane ? DIR "cpc-vs-1.key" : DIR "cpc-vs-0.key", 0600);
     if (fd < 0) return (int)fd;
     long n = sys_write(fd, buf, sizeof buf);
     sys_close(fd);
@@ -1011,14 +1014,29 @@ __attribute__((visibility("hidden"))) int cpc_stream_hook(void *session, CF stre
     CF kind = get(stream, &K_clientTypeUUID);
     if (kind && (extra_features() & 1) && (equal(kind, &K_vpData) || equal(kind, &K_vpSettings) || equal(kind, &K_vpOverlay))) {
         int which = equal(kind, &K_vpData) ? 0 : equal(kind, &K_vpSettings) ? 1 : 2;
+        /* settings and overlay: what the phone sends there isn't known (LIVI only records them), so their keys
+         * go to the Java side (lanes 4, 5), which decrypts and records every package. If the keys can't be
+         * made, the stream still goes to the sink on CPC_VP_PORT, as before. */
+        int port = CPC_VP_PORT;
+        if (which) {
+            int err = 0;
+            unsigned long long seed = (unsigned long long)FN(T_CFDictionaryGetInt64, long long (*)(CF, CF, int *))(stream, &K_seed, &err);
+            unsigned char rd[32], wr[32];
+            int ks = err ? err : FN(T_DERIVE_STREAM_KEYS, int (*)(void *, int, unsigned long long, unsigned, void *, void *))(
+                session, 0, seed, 32, wr, rd);
+            if (!ks) ks = save_keys(which == 1 ? 4 : 5, seed, rd, wr);
+            for (int i = 0; i < 32; i++) { ((volatile unsigned char *)rd)[i] = 0; ((volatile unsigned char *)wr)[i] = 0; }
+            if (!ks) port = which == 1 ? CPC_VPS_PORT : CPC_VPO_PORT;
+            else LOG("### cp-climate: videoPlayback %s stream keys not made: %d (to the sink)\n", which == 1 ? "settings" : "overlay", ks);
+        }
         CF d = new_dict();
         if (!d) return 0;
         set_int(d, &K_type, STREAM_DATA);
         set_int(d, &K_streamID, STREAM_DATA + 10 + which);
-        set_int(d, &K_dataPort, CPC_VP_PORT);
+        set_int(d, &K_dataPort, port);
         int st = FN(T_ADD_STREAM_REPLY, int (*)(CF, CF))(reply, d);
         release(d);
-        LOG("cp-climate: videoPlayback %s stream set up on port %d (reply %d)\n", which == 0 ? "data" : which == 1 ? "settings" : "overlay", CPC_VP_PORT, st);
+        LOG("cp-climate: videoPlayback %s stream set up on port %d (reply %d)\n", which == 0 ? "data" : which == 1 ? "settings" : "overlay", port, st);
         /* video stage 3: the playback session has begun; the Java side's answers go out from now on */
         if (st == 0 && which == 0) video_sender_start(session);
         return st == 0;

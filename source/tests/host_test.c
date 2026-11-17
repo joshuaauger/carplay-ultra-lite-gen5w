@@ -791,6 +791,27 @@ int main(void) {
         CHECK("videoPlayback data stream, experiment on: {type 130, streamID 140, dataPort 7134}", cpc_stream_hook(&session, st, reply, 130) == 1
               && streams->n == 5 && n_of(g(streams->v[4], "dataPort")) == 7134 && n_of(g(streams->v[4], "streamID")) == 140);
         CHECK("videoPlayback data stream: the answer loop started for this session", async_n == 1 && async_ctx == (void *)&session);
+        Str *uvs = str("BB493F61-A6B8-4769-8D74-80C23A9F71C4"); m_set(st, kt, uvs); m_release(uvs);
+        remove(DIR "cpc-vs-4.key");
+        CHECK("videoPlayback settings stream: {type 130, streamID 141, dataPort 7138}", cpc_stream_hook(&session, st, reply, 130) == 1
+              && streams->n == 6 && n_of(g(streams->v[5], "dataPort")) == 7138 && n_of(g(streams->v[5], "streamID")) == 141);
+        f = fopen(DIR "cpc-vs-4.key", "rb"); kn = f ? fread(kf, 1, sizeof kf, f) : 0; if (f) fclose(f);
+        CHECK("settings stream keys in cpc-vs-4.key (72 bytes, read key = Output)", kn == 72 && kf[8] == (unsigned char)(0x80 + seed));
+        Str *uvo = str("E3DC3EA6-E6C3-4B30-847C-B7ACFEBEA654"); m_set(st, kt, uvo); m_release(uvo);
+        remove(DIR "cpc-vs-5.key");
+        CHECK("videoPlayback overlay stream: {type 130, streamID 142, dataPort 7139}", cpc_stream_hook(&session, st, reply, 130) == 1
+              && streams->n == 7 && n_of(g(streams->v[6], "dataPort")) == 7139 && n_of(g(streams->v[6], "streamID")) == 142);
+        f = fopen(DIR "cpc-vs-5.key", "rb"); kn = f ? fread(kf, 1, sizeof kf, f) : 0; if (f) fclose(f);
+        CHECK("overlay stream keys in cpc-vs-5.key (72 bytes)", kn == 72);
+        CHECK("overlay stream: logged with its port", strstr(lastlog, "videoPlayback overlay stream set up on port 7139") != 0);
+        derive_fail = 1;
+        remove(DIR "cpc-vs-5.key");
+        CHECK("overlay stream, keys not made: still set up, on the sink port 7134", cpc_stream_hook(&session, st, reply, 130) == 1
+              && streams->n == 8 && n_of(g(streams->v[7], "dataPort")) == 7134 && n_of(g(streams->v[7], "streamID")) == 142);
+        f = fopen(DIR "cpc-vs-5.key", "rb");
+        CHECK("overlay stream, keys not made: no key file", f == 0);
+        if (f) fclose(f);
+        derive_fail = 0;
         remove(DIR "cpc-xenable");
         m_release(st); m_release(reply); m_release(kt); m_release(ks);
         CHECK("no leaks after M2", live == 0);

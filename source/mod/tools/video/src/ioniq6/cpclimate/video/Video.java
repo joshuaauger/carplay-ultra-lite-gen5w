@@ -7,12 +7,10 @@ import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
-import android.widget.TextView;
 
 import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.ExoPlayer;
@@ -58,8 +56,7 @@ public final class Video {
     static ExoPlayer player;
     static FrameLayout window;
     static SurfaceView surface;
-    static TextView status;
-    static FrameLayout controls;
+    static Controls controls;
     static Object itemUuid;
     static long streamId = -1;
     static boolean shown;
@@ -250,6 +247,8 @@ public final class Video {
         MediaSource source = progressive ? new ProgressiveMediaSource.Factory(data).createMediaSource(media)
                 : new HlsMediaSource.Factory(data).setAllowChunklessPreparation(true).createMediaSource(media);
         release();
+        subtitleChoice = -1;
+        if (controls != null) controls.setSubtitle(null);
         com.google.android.exoplayer2.DefaultRenderersFactory renderers = new Renderers(context);
         // start after 4 s of video (quick start), but after a pause wait for 10 s so pauses come less often;
         // keep loading up to 90 s ahead (2026-11-11: the default 2.5 s after a pause gave a pause every few seconds)
@@ -262,6 +261,9 @@ public final class Video {
                 .setLoadControl(load)
                 .setLooper(Looper.getMainLooper()).build();
         startCpuTrace();
+        // subtitles start off; the CC button turns them on (one text track at a time)
+        player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build());
         player.setAudioAttributes(new AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), false);
         player.addListener(listener);
         player.addAnalyticsListener(steps);
@@ -453,6 +455,18 @@ public final class Video {
         public void onVideoSizeChanged(VideoSize size) {
             layoutSurface(size.width, size.height, size.pixelWidthHeightRatio);
         }
+
+        @Override
+        public void onCues(com.google.android.exoplayer2.text.CueGroup cues) {
+            if (controls == null) return;
+            StringBuilder b = new StringBuilder();
+            for (com.google.android.exoplayer2.text.Cue c : cues.cues) {
+                if (c.text == null) continue;
+                if (b.length() > 0) b.append('\n');
+                b.append(c.text);
+            }
+            controls.setSubtitle(b);
+        }
     };
 
     // ---- answers ----
@@ -564,36 +578,8 @@ public final class Video {
             window.setBackgroundColor(Color.BLACK);
             surface = new SurfaceView(context);
             window.addView(surface, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
-            controls = new FrameLayout(context);
-            TextView close = button("✕  Back to CarPlay");
-            close.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    hide("back button");
-                }
-            });
-            controls.addView(close, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.LEFT));
-            TextView playPause = button("⏯  Play / Pause");
-            playPause.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    if (player != null) player.setPlayWhenReady(!player.getPlayWhenReady());
-                }
-            });
-            controls.addView(playPause, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL));
-            status = new TextView(context);
-            status.setTextColor(Color.WHITE);
-            status.setTextSize(20);
-            status.setPadding(24, 24, 24, 24);
-            controls.addView(status, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.RIGHT));
-            window.addView(controls, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-            window.setOnTouchListener(new View.OnTouchListener() {
-                @Override
-                public boolean onTouch(View v, MotionEvent e) {
-                    if (e.getAction() == MotionEvent.ACTION_DOWN) controls.setVisibility(controls.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
-                    return true;
-                }
-            });
+            controls = new Controls(context, main, actions);
+            window.addView(controls.root, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
             WindowManager.LayoutParams lp = new WindowManager.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.TYPE_SYSTEM_ALERT,
                     WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
@@ -602,9 +588,12 @@ public final class Video {
             lp.setTitle("cp-climate video");
             wm.addView(window, lp);
             if (player != null) player.setVideoSurfaceView(surface);
+        } else {
+            controls.start();
         }
+        fit = readFit();
         window.setVisibility(View.VISIBLE);
-        controls.setVisibility(View.VISIBLE);
+        controls.show();
         shown = true;
         if (player != null) {
             player.setPlayWhenReady(true);
@@ -612,17 +601,144 @@ public final class Video {
             if (s.width > 0) layoutSurface(s.width, s.height, s.pixelWidthHeightRatio);
         }
         updateStatus();
-        log("video: shown full screen");
+        log("video: shown full screen (picture " + FITS[fit] + ")");
     }
 
-    static TextView button(String text) {
-        TextView b = new TextView(context);
-        b.setText(text);
-        b.setTextColor(Color.WHITE);
-        b.setTextSize(24);
-        b.setBackgroundColor(0x99000000);
-        b.setPadding(32, 24, 32, 24);
-        return b;
+    /** what the controls' buttons do */
+    static final Controls.Actions actions = new Controls.Actions() {
+        @Override
+        public void close() {
+            hide("back button");
+        }
+
+        @Override
+        public void playPause() {
+            // the phone hears it as a playbackState notification (the listener below), as with its own setRate
+            if (player != null) player.setPlayWhenReady(!player.getPlayWhenReady());
+        }
+
+        @Override
+        public void seekTo(long ms) {
+            // as LIVI does: the car seeks, and the phone reads the new position from its next playbackInfo
+            if (player == null) return;
+            long d = durationMs();
+            player.seekTo(Math.max(0, d > 0 ? Math.min(ms, d) : ms));
+            trace("seek to " + ms / 1000 + " s (on the car)");
+        }
+
+        @Override
+        public void seekBy(long ms) {
+            if (player != null) seekTo(player.getCurrentPosition() + ms);
+        }
+
+        @Override
+        public String nextFit() {
+            fit = (fit + 1) % FITS.length;
+            saveFit(fit);
+            if (player != null) {
+                VideoSize s = player.getVideoSize();
+                if (s.width > 0) layoutSurface(s.width, s.height, s.pixelWidthHeightRatio);
+            }
+            return FIT_NAMES[fit];
+        }
+
+        @Override
+        public String nextSubtitles() {
+            return Video.nextSubtitles();
+        }
+    };
+
+    /** what the controls show, read on every tick (main thread) */
+    static Controls.State controlsState() {
+        Controls.State s = new Controls.State();
+        if (player == null) {
+            s.error = currentUrl == null ? "No video" : null;
+            return s;
+        }
+        int state = player.getPlaybackState();
+        long d = player.getDuration();
+        s.duration = d == C.TIME_UNSET ? 0 : player.isCurrentMediaItemLive() ? -1 : d;
+        s.position = Math.max(0, player.getCurrentPosition());
+        s.buffered = Math.max(s.position, player.getBufferedPosition());
+        s.playing = player.isPlaying();
+        s.wanted = player.getPlayWhenReady();
+        s.loading = state == Player.STATE_BUFFERING || (state == Player.STATE_IDLE && player.getPlayerError() == null);
+        PlaybackException e = player.getPlayerError();
+        if (e != null) s.error = e.errorCode >= 4000 && e.errorCode < 5000 ? "This head unit can't decode this video"
+                : e.errorCode >= 2000 && e.errorCode < 3000 ? "Can't load the video through the phone" : "Can't play this video";
+        int[] text = textTracks();
+        s.hasSubtitles = text.length > 0;
+        s.subtitlesOn = subtitleChoice >= 0;
+        return s;
+    }
+
+    // ---- picture fit ----
+
+    static final String[] FITS = { "fit", "fill", "stretch" };
+    static final String[] FIT_NAMES = { "Fit: whole picture", "Fill: crop to the screen", "Stretch to the screen" };
+    static int fit;
+
+    static int readFit() {
+        try {
+            String v = readSmall(FILES + "cpc-video-fit").trim();
+            for (int i = 0; i < FITS.length; i++) if (FITS[i].equals(v)) return i;
+        } catch (Throwable ignored) {
+        }
+        return 0;
+    }
+
+    static void saveFit(int f) {
+        try {
+            java.io.FileOutputStream out = new java.io.FileOutputStream(FILES + "cpc-video-fit");
+            try {
+                out.write(FITS[f].getBytes("US-ASCII"));
+            } finally {
+                out.close();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    // ---- subtitles: off, then each text track the video has ----
+
+    /** -1: off; else the index into textTracks() */
+    static int subtitleChoice = -1;
+
+    /** the video's text tracks, as group index * 1000 + track index */
+    static int[] textTracks() {
+        if (player == null) return new int[0];
+        List<Integer> out = new ArrayList<Integer>();
+        List<com.google.android.exoplayer2.Tracks.Group> groups = player.getCurrentTracks().getGroups();
+        for (int g = 0; g < groups.size(); g++) {
+            com.google.android.exoplayer2.Tracks.Group group = groups.get(g);
+            if (group.getType() != C.TRACK_TYPE_TEXT) continue;
+            for (int t = 0; t < group.length; t++) if (group.isTrackSupported(t)) out.add(g * 1000 + t);
+        }
+        int[] a = new int[out.size()];
+        for (int i = 0; i < a.length; i++) a[i] = out.get(i);
+        return a;
+    }
+
+    static String nextSubtitles() {
+        if (player == null) return null;
+        int[] text = textTracks();
+        if (text.length == 0) return null;
+        subtitleChoice = subtitleChoice + 1 >= text.length ? -1 : subtitleChoice + 1;
+        com.google.android.exoplayer2.trackselection.TrackSelectionParameters.Builder b = player.getTrackSelectionParameters().buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT);
+        if (subtitleChoice < 0) {
+            player.setTrackSelectionParameters(b.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build());
+            if (controls != null) controls.setSubtitle(null);
+            return "Subtitles off";
+        }
+        int code = text[subtitleChoice];
+        com.google.android.exoplayer2.Tracks.Group group = player.getCurrentTracks().getGroups().get(code / 1000);
+        com.google.android.exoplayer2.Format f = group.getTrackFormat(code % 1000);
+        player.setTrackSelectionParameters(b.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                .addOverride(new com.google.android.exoplayer2.trackselection.TrackSelectionOverride(group.getMediaTrackGroup(), code % 1000))
+                .build());
+        String name = f.label != null ? f.label : f.language != null ? new java.util.Locale(f.language).getDisplayLanguage() : "Subtitles " + (subtitleChoice + 1);
+        return "Subtitles: " + name;
     }
 
     static void layoutSurface(int w, int h, float par) {
@@ -639,25 +755,36 @@ public final class Video {
             });
             return;
         }
-        double aspect = w * (double) par / h;
-        int vw = W, vh = (int) Math.round(W / aspect);
-        if (vh > H) {
+        double aspect = w * (double) (par > 0 ? par : 1) / h;
+        int vw, vh;
+        if (fit == 2) {
+            // stretch: the whole screen, the picture's shape changed
+            vw = W;
             vh = H;
-            vw = (int) Math.round(H * aspect);
+        } else {
+            vw = W;
+            vh = (int) Math.round(W / aspect);
+            // fit: the whole picture inside the screen; fill: the screen covered, the picture's edges cut off
+            if (fit == 0 ? vh > H : vh < H) {
+                vh = H;
+                vw = (int) Math.round(H * aspect);
+            }
         }
         surface.setLayoutParams(new FrameLayout.LayoutParams(vw, vh, Gravity.CENTER));
     }
 
     static void updateStatus() {
-        if (status == null) return;
-        String s = player == null ? "No video" : player.getPlayerError() != null ? "Can't play this video"
-                : player.getPlaybackState() == Player.STATE_BUFFERING ? "Loading…" : player.isPlaying() ? "" : "Paused";
-        status.setText(s);
+        if (controls == null) return;
+        try {
+            controls.update(controlsState());
+        } catch (Throwable ignored) {
+        }
     }
 
     /** back to CarPlay: video paused, window hidden, the screen given back */
     static void hide(String why) {
         if (player != null) player.setPlayWhenReady(false);
+        if (controls != null) controls.stop();
         if (window != null) window.setVisibility(View.GONE);
         shown = false;
         log("video: hidden (" + why + ")");

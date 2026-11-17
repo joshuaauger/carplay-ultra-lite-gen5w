@@ -150,6 +150,11 @@ public final class CpClimate extends ModEntry {
             // the Ultra experiment: the virtual cluster's video goes here and is thrown away
             if (ultra) new ClusterSink(log).start();
             if ((extraBits & 1) != 0) new ClusterSink(log, 7134, "videoPlayback").start();
+            // the phone's video settings and overlay streams: decrypted and recorded, to learn what they carry
+            if ((extraBits & 1) != 0) {
+                new VideoSideChannel(dir, log, "settings", 7138, "cpc-vs-4.key").start();
+                new VideoSideChannel(dir, log, "overlay", 7139, "cpc-vs-5.key").start();
+            }
             // video stage 2: the playback messages the native /command hook answers and passes on
             if ((extraBits & 1) != 0) {
                 // test: the video engine plays sound only (no picture decoder), to tell a decoder crash from the rest

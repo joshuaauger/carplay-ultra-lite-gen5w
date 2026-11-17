@@ -2,6 +2,13 @@
 
 Versions after 1.0.0 are test builds running on one car (Hyundai Ioniq 6, US, firmware 260507). 1.3.3 is published as a test build (an update for a car on 1.0.0); the main release is still 1.0.0.
 
+## 1.1.10 (2026-11-17, fork: Ioniq 6 CEEV 260903, not yet tried in the car)
+
+- **New video controls:** the plain "Back to CarPlay" and "Play / Pause" text is replaced by controls in the style of Apple's players: a close button, a big play/pause with 10-second skip back and forward, a seek bar with the elapsed and remaining time and what's loaded, a loading spinner, and messages when a video can't play. They fade out after 4 seconds while playing; tap to bring them back, double-tap the left or right third of the screen to skip.
+- **Picture fit:** a button at the top right switches between the whole picture, filling the screen (edges cut off) and stretching. The choice is kept.
+- **Subtitles:** the CC button goes through the video's subtitle tracks and off. Subtitles start off.
+- **The phone's video side streams are recorded:** the phone opens a "settings" and an "overlay" stream for every video, and nobody knows what they carry yet. The car now decrypts both (ports 7138 and 7139, only while "Video playback in CarPlay" is on) and records every package in DiPO's `files/cpc-video-side/`. Nothing is acted on. Native recipe rebuilt for libCarPlayCore ef49c09b (CEEV.CAN 260903) only; the d3a47296 recipe (US 260507, CAN 250818/260206) still sends both streams to the old sink.
+
 ## 1.1.9 (2026-11-16, fork: Ioniq 6 CEEV 260903)
 
 - **Video on cars with the whitelist firewall (Ioniq 6):** the video engine connects out to the iPhone's video proxy, on a port the phone picks each time; the stock firewall drops outgoing traffic on the hotspot, so playback failed with "tunnel: failed to connect … after 8000ms" and the car stayed on Now Playing. Two network rules (only while "Video playback in CarPlay" is on): outgoing TCP to the hotspot's addresses, and the replies.
