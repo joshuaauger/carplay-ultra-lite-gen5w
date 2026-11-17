@@ -19,11 +19,15 @@ public class SyncTest {
         st = s.step(15000, 10500, 30000, true);
         check("after the stall, 2.5 s behind: fastest catch-up", st.speed == Sync.MAX_FAST && st.seekTo < 0);
         st = s.step(20000, 18900, 40000, true);
-        check("100 ms behind while catching up: keeps going", st.speed > 1f && st.speed < 1.1f);
-        st = s.step(20000, 18950, 40000, true);
-        check("50 ms behind: done, normal speed", st.speed == 1f);
+        check("100 ms behind while catching up: gently", st.speed > 1f && st.speed <= 1.05f);
+        st = s.step(20000, 18970, 40000, true);
+        check("30 ms behind while catching up: still going (stops within 20 ms)", st.speed == Sync.MIN_FAST);
+        st = s.step(20000, 18985, 40000, true);
+        check("15 ms behind: done, normal speed", st.speed == 1f);
+        st = s.step(20000, 18940, 40000, true);
+        check("60 ms behind from normal speed: inside the dead band", st.speed == 1f);
         st = s.step(20000, 18900, 40000, true);
-        check("100 ms behind from normal speed: inside the dead band", st.speed == 1f);
+        check("100 ms behind from normal speed: corrected", st.speed > 1f);
         st = s.step(25000, 22500, 24000, true);
         check("2.5 s behind but little loaded: no speed-up (would stall again)", st.speed == 1f);
 
@@ -37,9 +41,11 @@ public class SyncTest {
         // ahead of the sound
         s.start(0, 0);
         st = s.step(10000, 10300, 40000, true);
-        check("300 ms ahead: slower", st.speed == Sync.SLOW);
+        check("300 ms ahead: slower", st.speed == Sync.MIN_SLOW);
         st = s.step(10000, 10040, 40000, true);
-        check("40 ms ahead: back to normal", st.speed == 1f);
+        check("40 ms ahead while slowing: still slower", st.speed == Sync.MAX_SLOW);
+        st = s.step(10000, 10010, 40000, true);
+        check("10 ms ahead: back to normal", st.speed == 1f);
 
         // pauses hold the sound's clock, seeks move it
         s.start(0, 0);

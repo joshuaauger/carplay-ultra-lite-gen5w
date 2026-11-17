@@ -11,20 +11,24 @@ package ioniq6.cpclimate.video;
  * compares it with the picture: a picture behind plays faster (up to MAX_FAST; it has no sound of its own, so
  * that can't be heard), one ahead slower, and one more than JUMP_MS behind jumps to the sound when that point is
  * already loaded. It speeds up only with AHEAD_MS loaded, so catching up doesn't empty the buffer into another
- * stall on a slow connection.
+ * stall on a slow connection. The speed is proportional to the gap and the correction runs until the gap is
+ * within DONE_MS: 1.1.13 stopped at 60 ms and started at 150 ms, which left the picture 60-150 ms behind.
  *
  * Plain Java, the time passed in, so it is tested off the car (tests/SyncTest.java). Main thread only.
  */
 final class Sync {
     /** behind or ahead by more than START_MS: correct; until back within DONE_MS */
-    static final long START_MS = 150, DONE_MS = 60;
+    static final long START_MS = 80, DONE_MS = 20;
     /** behind by more than JUMP_MS, with the sound's point loaded and JUMP_MARGIN_MS after it: jump there */
     static final long JUMP_MS = 8000, JUMP_MARGIN_MS = 2000;
     /** speed up only with this much loaded ahead of the picture */
     static final long AHEAD_MS = 5000;
-    /** catching up: 1 + behind / GAIN_MS, between MIN_FAST and MAX_FAST (1 s behind: the most) */
-    static final long GAIN_MS = 4000;
-    static final float MIN_FAST = 1.05f, MAX_FAST = 1.25f, SLOW = 0.9f;
+    /**
+     * catching up: 1 + behind / GAIN_MS, between MIN_FAST and MAX_FAST (500 ms behind: the most); ahead,
+     * 1 - ahead / GAIN_MS between MIN_SLOW and MAX_SLOW. Near the sound it corrects gently (2%: 10 ms a tick)
+     */
+    static final long GAIN_MS = 2000;
+    static final float MIN_FAST = 1.02f, MAX_FAST = 1.25f, MAX_SLOW = 0.98f, MIN_SLOW = 0.9f;
 
     long anchorPos, anchorAt;
     boolean started, running;
@@ -94,7 +98,7 @@ final class Sync {
         } else if ((behind > START_MS || (speed > 1f && behind > DONE_MS)) && buffered - position >= AHEAD_MS) {
             speed = Math.max(MIN_FAST, Math.min(MAX_FAST, 1f + behind / (float) GAIN_MS));
         } else if (behind < -START_MS || (speed < 1f && behind < -DONE_MS)) {
-            speed = SLOW;
+            speed = Math.max(MIN_SLOW, Math.min(MAX_SLOW, 1f + behind / (float) GAIN_MS));
         } else {
             speed = 1f;
         }

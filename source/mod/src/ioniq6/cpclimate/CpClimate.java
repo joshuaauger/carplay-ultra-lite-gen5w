@@ -161,6 +161,7 @@ public final class CpClimate extends ModEntry {
                 writeNumber(dir, "cpc-video-nopicture", m.settingBoolean("video_no_picture", false) ? 1 : 0, "video: sound only (test)");
                 // the head unit doesn't play sound from CarPlay's process yet, and trying makes the picture race
                 writeNumber(dir, "cpc-video-nosound", m.settingBoolean("video_sound", false) ? 0 : 1, "video: picture only");
+                writeNumber(dir, "cpc-video-nosync", m.settingBoolean("video_sync", true) ? 0 : 1, "video: picture not kept with the sound");
                 new VideoMessages(log).start();
                 // the video engine (ExoPlayer through the phone's proxy), when this build has it
                 boolean engine = app.context != null && VideoMessages.startEngine(app.context);

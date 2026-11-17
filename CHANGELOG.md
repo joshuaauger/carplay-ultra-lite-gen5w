@@ -2,6 +2,13 @@
 
 Versions after 1.0.0 are test builds running on one car (Hyundai Ioniq 6, US, firmware 260507). 1.3.3 is published as a test build (an update for a car on 1.0.0); the main release is still 1.0.0.
 
+## 1.1.14 (2026-11-17, fork: Ioniq 6 CEEV 260903, not yet tried in the car)
+
+- **The head unit's keys work during a video.** The video's window took the keys and ignored them, so home, map, setup and exit did nothing and the video stayed on top. The window no longer takes the keys: they go to CarPlay and the head unit as without a video. When another screen comes up (the launcher, the map, the settings, CarPlay closing), the video closes and pauses, and CarPlay gets its screen back.
+- **Tighter sync with the sound.** 1.1.13 only corrected the picture once it was 150 ms off and stopped at 60 ms, which left it 60–150 ms behind the sound. It now corrects from 80 ms off until it is within 20 ms, gently near the end.
+- **New setting "Video: keep the picture with the sound"** (on). Off, the picture runs on its own clock as in 1.1.12, to compare the two.
+- The sync's corrections (start, end, jumps) and a line every 30 seconds go to the HMG-API log, not only to the trace file.
+
 ## 1.1.13 (2026-11-17, fork: Ioniq 6 CEEV 260903, not yet tried in the car)
 
 - **The picture keeps up with the sound.** The sound comes from the phone and plays on while the car's picture stalls to load, so each stall used to leave the picture that much behind. The car now keeps a clock of where the sound is: a picture behind it plays slightly faster (up to 1.25×, which can't be heard since the car's player has no sound) until it catches up, and one more than 8 seconds behind jumps straight to the sound when that part is already loaded. It only speeds up with 5 seconds loaded ahead, so catching up doesn't cause another stall. Pauses and seeks, the phone's and the car's, move the clock with them.

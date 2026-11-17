@@ -34,6 +34,14 @@
    "apply": "restart"
   },
   {
+   "key": "video_sync",
+   "type": "toggle",
+   "default": true,
+   "title": "Video: keep the picture with the sound",
+   "description": "Only with video playback on. The sound comes from the phone and plays on while the car's picture stops to load; with this on, the picture plays slightly faster (up to 1.25x) until it is back with the sound, or jumps there after a long stop. Off: the picture runs on its own, as in 1.1.12. Restart the head unit afterwards.",
+   "apply": "restart"
+  },
+  {
    "key": "video_no_picture",
    "type": "toggle",
    "default": false,

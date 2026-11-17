@@ -77,6 +77,8 @@ public final class Video {
         main = new Handler(Looper.getMainLooper());
         noPicture = new File(FILES + "cpc-video-nopicture").exists();
         noSound = new File(FILES + "cpc-video-nosound").exists();
+        noSync = new File(FILES + "cpc-video-nosync").exists();
+        watchActivities();
         // 2026-11-11: CarPlay's process died 1.7 s into a video with nothing in the log; record any uncaught error first
         final Thread.UncaughtExceptionHandler before = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
@@ -112,12 +114,14 @@ public final class Video {
                 if (before != null) before.uncaughtException(t, e);
             }
         });
-        String mode = noPicture ? ", sound only (test)" : noSound ? ", picture only" : "";
+        String mode = (noPicture ? ", sound only (test)" : noSound ? ", picture only" : "") + (noSync ? ", not kept with the sound" : "");
         trace("---- engine start (process " + android.os.Process.myPid() + ")" + mode);
         log("video engine ready (ExoPlayer 2.19.1, proxy through the phone)" + mode);
     }
 
     static boolean noPicture, noSound;
+    /** setting video_sync off: the picture runs on its own clock, as in 1.1.12 */
+    static boolean noSync;
     static final int LOAD_RETRIES = 8;
     static final long START_BITRATE = 1500000L;
 
@@ -638,7 +642,10 @@ public final class Video {
             window.addView(surface, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
             WindowManager.LayoutParams lp = new WindowManager.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.TYPE_SYSTEM_ALERT,
-                    WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+                    WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                            // not focusable: the head unit's keys (home, map, setup, exit, volume) go on to CarPlay's
+                            // screen and the system as without the video, instead of to this window, which ignored them
+                            | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                     PixelFormat.OPAQUE);
             lp.gravity = Gravity.TOP | Gravity.LEFT;
             lp.setTitle("cp-climate video");
@@ -660,6 +667,11 @@ public final class Video {
             controls.start();
         }
         fit = readFit();
+        // the screen under the video is read once borrowing the screen has settled (SETTLE_MS), then watched
+        shownOver = null;
+        shownAt = now();
+        main.removeCallbacks(watchScreen);
+        main.postDelayed(watchScreen, SETTLE_MS);
         window.setVisibility(View.VISIBLE);
         controls.root.setVisibility(View.VISIBLE);
         controls.show();
@@ -879,9 +891,9 @@ public final class Video {
     }
 
     static boolean syncing;
-    static long lastSyncTrace;
+    static long lastSyncTrace, lastSyncLog, correctingSince;
     static float lastSpeed = 1f;
-    static final long SYNC_MS = 500, SYNC_TRACE_MS = 5000;
+    static final long SYNC_MS = 500, SYNC_TRACE_MS = 5000, SYNC_LOG_MS = 30000;
 
     static void startSync() {
         if (syncing || main == null) return;
@@ -904,20 +916,120 @@ public final class Video {
 
     /** twice a second: the picture's speed (or a jump) to keep it with the sound, and a trace line every 5 s */
     static void followSound() {
+        if (noSync) return;
         long now = now();
         boolean moving = player.isPlaying();
         Sync.Step st = sync.step(now, player.getCurrentPosition(), player.getBufferedPosition(), moving);
         if (st.seekTo >= 0) {
-            trace("sync: picture " + st.behind + " ms behind the sound, jumping to " + st.seekTo / 1000 + " s (loaded)");
+            log("video: sync: picture " + st.behind + " ms behind the sound, jumping to " + st.seekTo / 1000 + " s (loaded)");
             player.seekTo(st.seekTo);
         }
-        if (player.getPlaybackParameters().speed != st.speed) player.setPlaybackSpeed(st.speed);
-        boolean changed = (st.speed == 1f) != (lastSpeed == 1f);
+        // a new speed only when it changed by 1% or more, or back to exactly 1
+        float speed = player.getPlaybackParameters().speed;
+        if (st.speed != speed && (st.speed == 1f || Math.abs(st.speed - speed) >= 0.01f)) player.setPlaybackSpeed(st.speed);
+        // the HMG-API log: each correction's start and end, and a line every 30 s; the trace file every 5 s
+        if (st.speed != 1f && lastSpeed == 1f) {
+            correctingSince = now;
+            log("video: sync: picture " + Math.abs(st.behind) + " ms " + (st.behind > 0 ? "behind" : "ahead of") + " the sound, "
+                    + (st.speed > 1f ? "catching up" : "slowing down") + String.format(java.util.Locale.US, " (%.2fx)", st.speed));
+        } else if (st.speed == 1f && lastSpeed != 1f) {
+            log("video: sync: back with the sound (" + st.behind + " ms) after " + (now - correctingSince) / 100 / 10.0 + " s");
+        }
         lastSpeed = st.speed;
-        if (sync.started && (changed || now - lastSyncTrace >= SYNC_TRACE_MS)) {
+        if (sync.started && now - lastSyncLog >= SYNC_LOG_MS) {
+            lastSyncLog = lastSyncTrace = now;
+            log("video: sync: picture " + st.behind + " ms behind the sound, speed " + st.speed + (moving ? "" : " (not moving)"));
+        } else if (sync.started && now - lastSyncTrace >= SYNC_TRACE_MS) {
             lastSyncTrace = now;
             trace("sync: picture " + st.behind + " ms behind the sound, speed " + st.speed + (moving ? "" : " (not moving)"));
         }
+    }
+
+    // ---- the head unit's other screens: the video goes when CarPlay's screen does ----
+
+    static final long WATCH_MS = 1000, LEFT_MS = 400, SETTLE_MS = 1500;
+    /** the activity on top once the video was shown (CarPlay's), null before SETTLE_MS or if it can't be read */
+    static String shownOver;
+    static long shownAt;
+    static int started;
+
+    /** the activity on top of the screen, as package/class; null if the head unit doesn't let this process see it */
+    @SuppressWarnings("deprecation")
+    static String topActivity() {
+        try {
+            android.app.ActivityManager am = (android.app.ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+            List<android.app.ActivityManager.RunningTaskInfo> tasks = am.getRunningTasks(1);
+            if (tasks == null || tasks.isEmpty() || tasks.get(0).topActivity == null) return null;
+            return tasks.get(0).topActivity.flattenToShortString();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * every WATCH_MS while shown: a different activity on top (home, map, setup: the launcher, the navigation,
+     * the settings, or CarPlay closed) closes the video, as the stock player's screen would go
+     */
+    static final Runnable watchScreen = new Runnable() {
+        @Override
+        public void run() {
+            if (!shown) return;
+            String top = topActivity();
+            if (shownOver == null) {
+                shownOver = top;
+                log("video: over " + (top != null ? top : "a screen this process can't see (watching CarPlay's activities instead)"));
+            } else if (top != null && !top.equals(shownOver)) {
+                hide("the head unit showed " + top);
+                return;
+            }
+            main.postDelayed(this, WATCH_MS);
+        }
+    };
+
+    /**
+     * the same from CarPlay's own activities, for a head unit that doesn't show this process the top activity:
+     * all of them stopped (another app's screen in front) for LEFT_MS closes the video
+     */
+    static void watchActivities() {
+        if (!(context instanceof android.app.Application)) return;
+        ((android.app.Application) context).registerActivityLifecycleCallbacks(new android.app.Application.ActivityLifecycleCallbacks() {
+            @Override
+            public void onActivityStarted(android.app.Activity a) {
+                started++;
+            }
+
+            @Override
+            public void onActivityStopped(android.app.Activity a) {
+                started = Math.max(0, started - 1);
+                trace("screen: " + a.getClass().getSimpleName() + " stopped (" + started + " started)");
+                if (started == 0 && main != null) main.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (shown && started == 0 && now() - shownAt > SETTLE_MS) hide("CarPlay's screen stopped");
+                    }
+                }, LEFT_MS);
+            }
+
+            @Override
+            public void onActivityCreated(android.app.Activity a, android.os.Bundle b) {
+            }
+
+            @Override
+            public void onActivityResumed(android.app.Activity a) {
+            }
+
+            @Override
+            public void onActivityPaused(android.app.Activity a) {
+            }
+
+            @Override
+            public void onActivitySaveInstanceState(android.app.Activity a, android.os.Bundle b) {
+            }
+
+            @Override
+            public void onActivityDestroyed(android.app.Activity a) {
+            }
+        });
     }
 
     static void updateStatus() {
@@ -930,6 +1042,7 @@ public final class Video {
 
     /** back to CarPlay: video paused, window hidden, the screen given back */
     static void hide(String why) {
+        if (main != null) main.removeCallbacks(watchScreen);
         // paused while playing: the phone hears "paused" from onIsPlayingChanged. Not playing (loading, an
         // error): nothing changes there, so the phone is told here, or its sound would play on
         boolean moving = player != null && player.isPlaying();

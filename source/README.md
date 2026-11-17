@@ -28,7 +28,8 @@ main README. Everything here was built and tested on one car: a **Hyundai Ioniq 
 | Video: playback through the phone's proxy | Plays picture only in the car (1.1.6), with pauses to load. 1.1.7 loads each segment over several connections; not yet tried with video |
 | Video: sound | Works in the car with `video_sound` off (the default). The car's player then has no sound of its own, so the sound most likely comes from the phone over CarPlay's normal audio; `video_sound` would add the car's own copy (not needed) |
 | Video: controls (1.1.10) | Close, play/pause, 10 s skip, seek bar, picture fit (fit, fill, stretch), subtitles; drawn in code, since the hook jar carries no Android resources. Not yet tried in the car |
-| Video: keeping the picture with the phone's sound (1.1.13) | `Sync`: a clock of the sound's position (moved by pauses and seeks); a picture behind plays up to 1.25× fast, more than 8 s behind jumps when loaded. Network errors retried; the phone told "paused" after a fatal error. Assumes the phone's sound follows the car's own seeks. Not yet tried in the car |
+| Video: keeping the picture with the phone's sound (1.1.13) | `Sync`: a clock of the sound's position (moved by pauses and seeks); a picture behind plays up to 1.25× fast, more than 8 s behind jumps when loaded. Network errors retried; the phone told "paused" after a fatal error. Assumes the phone's sound follows the car's own seeks. 1.1.14: corrects from 80 ms until within 20 ms; setting `video_sync`; corrections in the HMG-API log. Not yet tried in the car |
+| Video: the head unit's keys and screens (1.1.14) | The video's windows don't take key focus, so home, map, setup, exit and volume reach CarPlay and the system; the video closes when another activity comes on top (read with getRunningTasks, else from DiPO's own activities stopping). Not yet tried in the car |
 | Video: the phone's settings and overlay streams (1.1.10) | Decrypted and recorded in `files/cpc-video-side/<session>/` (ports 7138, 7139); what they carry isn't known yet. ef49c09b recipe only. From 1.1.11 the `video-usb` service copies them, with the video trace, to a USB stick that has a `CarPlayUltraLite-Video` folder |
 
 ## Layout
@@ -135,6 +136,7 @@ AC-3 or DTS).
 | `rear_defrost` | on | CarPlay's rear window button runs the rear defrost (READY only) |
 | `video_playback` | on | Offers CarPlay's video playback feature to the phone |
 | `video_sound` | off | The video player plays sound too (test; the head unit doesn't output it yet) |
+| `video_sync` | on | Keep the car's picture with the phone's sound (faster or slower playback, a jump after a long stall); off: the picture runs on its own clock, as in 1.1.12 |
 | `video_no_picture` | off | The video player plays sound only (test) |
 | `extra_seats` | off | Rear seat heat, front seat ventilation, steering wheel heat (experimental) |
 | `extras_layout` | B | Layout A, B, C or D of the extra seat controls (above) |
