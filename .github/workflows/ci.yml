@@ -21,6 +21,77 @@ jobs:
     with:
       mods: source/mod
 
+  # The package signed with the shared author key (secret MOD_KEY, base64 of the key file; its public
+  # half is .github/mod-key.pub), so a later build installs as an update of this one. Not on pull
+  # requests (no secrets there); the "mod" job above still makes the throwaway-key test package.
+  signed:
+    needs: mod
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq clang lld zip unzip mksh
+      - name: The pinned HMG-API
+        id: pin
+        run: echo "ref=$(python3 -c 'import json; print(json.load(open("hmgapi-sdk.json"))["ref"])')" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Open-HMG/HMG-API
+          ref: ${{ steps.pin.outputs.ref }}
+          path: .hmgapi-src
+          persist-credentials: false
+      - name: The SDK
+        run: |
+          S="$RUNNER_TEMP/hmgapi-sdk"
+          (cd .hmgapi-src && ./build.sh sdk)
+          rm -rf "$S" && mkdir -p "$S" && unzip -q .hmgapi-src/out/dist/hmgapi-mod-sdk-*.zip -d "$S"
+          rm -rf .hmgapi-src
+          echo "HMGAPI_SDK=$S" >> "$GITHUB_ENV"
+          pip install --require-hashes -r "$S/requirements.txt"
+      - name: Key
+        env:
+          MOD_KEY: ${{ secrets.MOD_KEY }}
+        run: |
+          [ -n "$MOD_KEY" ] || { echo "MOD_KEY isn't set in this repository's secrets"; exit 1; }
+          K="$RUNNER_TEMP/author.key"
+          (umask 077; echo "$MOD_KEY" | base64 -d > "$K")
+          cp .github/mod-key.pub "$K.pub"
+          ENG="java -cp $HMGAPI_SDK/lib/hmgapi-engine.jar hmgapi.engine.Signing"
+          [ "$($ENG uuid "$K")" = "$($ENG uuid .github/mod-key.pub)" ] || { echo "MOD_KEY isn't the private half of .github/mod-key.pub"; exit 1; }
+          echo "KEY=$K" >> "$GITHUB_ENV"
+      - name: Build, sign and package
+        run: |
+          m=source/mod; id=$(basename "$m")
+          sh "$HMGAPI_SDK/bin/build-mod.sh" "$m" "out/build/$id" "out/work/$id"
+          out=$(HMGAPI_MOD_BUILD="$PWD/out/build/$id" sh "$HMGAPI_SDK/bin/mkmodpkg.sh" "$m" "$KEY")
+          echo "$out"
+          z=$(echo "$out" | tail -1)
+          W=$(mktemp -d); unzip -q "$z" -d "$W"
+          java -cp "$HMGAPI_SDK/lib/hmgapi-engine.jar" hmgapi.engine.Signing verify "$W" "$(java -cp "$HMGAPI_SDK/lib/hmgapi-engine.jar" hmgapi.engine.Signing uuid .github/mod-key.pub)"
+          sh "$HMGAPI_SDK/bin/mknemesismod.sh" "$z"
+      - name: Forget the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP"/author.key*
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cp-climate-signed-package
+          path: |
+            out/packages/*.zip
+            out/dist/*.zip
+          retention-days: 30
+
   plan:
     runs-on: ubuntu-24.04
     outputs:
