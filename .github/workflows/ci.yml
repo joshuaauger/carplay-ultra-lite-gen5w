@@ -1,0 +1,47 @@
+# CI: HMG-API's mod workflow (hook points, build, a package signed with a throwaway key: a test
+# build) with the SDK hmgapi-sdk.json pins, and the native code segment for libCarPlayCore builds.
+# The segment needs no library from a car; the memory recipe is made from it locally
+# (source/tools/build.py recipe), because that step reads the stock library.
+name: CI
+
+on:
+  push:
+    branches: [main, "feature/**", "port/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mod:
+    uses: Open-HMG/HMG-API/.github/workflows/mod.yml@b459567eed0a4c5645efe2deb349b46a3523a422
+    with:
+      mods: source/mod
+
+  segment:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        build: [ef49c09b]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq clang lld
+          pip install pyelftools==0.32
+      - name: Segment for libCarPlayCore ${{ matrix.build }}
+        run: python3 source/tools/build.py seg "${{ matrix.build }}" "out/seg-${{ matrix.build }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cp-climate-segment-${{ matrix.build }}
+          path: |
+            out/seg-${{ matrix.build }}/segment.bin
+            out/seg-${{ matrix.build }}/segment.json
+          retention-days: 30

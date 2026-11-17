@@ -5,3 +5,5 @@ source/mod/tools/video/libs/
 # check.sh output
 source/check/report/
 source/check/cp-climate-check.jar
+# build output
+out/

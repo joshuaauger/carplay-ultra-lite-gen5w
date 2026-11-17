@@ -8,13 +8,14 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 CENTRAL=https://repo1.maven.org/maven2
 GOOGLE=https://dl.google.com/dl/android/maven2
 mkdir -p "$HERE/libs"
+sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 
 # out-file  repo  group/artifact path  version  sha256
 while read -r out repo path ver sum; do
     [ -n "$out" ] || continue
     dest="$HERE/$out"
-    if [ -f "$dest" ] && [ "$(shasum -a 256 "$dest" | cut -d' ' -f1)" = "$sum" ]; then continue; fi
+    if [ -f "$dest" ] && [ "$(sha "$dest")" = "$sum" ]; then continue; fi
     base=$(basename "$path")
     url="$repo/$path/$ver/$base-$ver"
     if curl -fsSL "$url.jar" -o "$W/dl" 2>/dev/null; then
@@ -24,7 +25,7 @@ while read -r out repo path ver sum; do
         (cd "$W" && rm -f classes.jar && unzip -q -o dl.aar classes.jar)
         cp "$W/classes.jar" "$dest"
     fi
-    got=$(shasum -a 256 "$dest" | cut -d' ' -f1)
+    got=$(sha "$dest")
     if [ "$got" != "$sum" ]; then
         echo "fetch-libs: $out has SHA-256 $got, expected $sum" >&2
         rm -f "$dest"

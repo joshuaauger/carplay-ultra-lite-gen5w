@@ -4,6 +4,15 @@
 @ the library left them.
 #include "cpc.h"
 
+@ /command's registers differ between libCarPlayCore builds (tools/build.py passes them):
+@ the request plist's register and the error slot's offset on the stack.
+#ifndef CPC_CMD_PLIST
+#define CPC_CMD_PLIST r7
+#endif
+#ifndef CPC_CMD_ERR
+#define CPC_CMD_ERR 0x7c
+#endif
+
     .syntax unified
     .thumb
     .section .text.entry, "ax", %progbits
@@ -77,7 +86,7 @@ cpc_stub_stream:
 cpc_stub_command:
     mov     r9, r0                  @ the first replaced instruction
     push    {r0, lr}
-    mov     r1, r7
+    mov     r1, CPC_CMD_PLIST
     mov     r2, r4
     bl      cpc_command_hook        @ r0 = type, r1 = plist, r2 = HTTP request
     mov     r3, r0
@@ -93,7 +102,7 @@ cpc_stub_command:
     bx      r3                      @ 0xb6d0: no type, as stock (451)
 2:  mov.w   r4, #200                @ status, as the stock error paths set it
     movs    r3, #0
-    str     r3, [sp, #0x7c]         @ err = 0
+    str     r3, [sp, #CPC_CMD_ERR]  @ err = 0
     ldr     r3, [r12, #(T_CMD_DONE * 4)]
     add     r3, r12
     bx      r3                      @ 0xaf6c: release the plist, send the reply

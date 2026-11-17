@@ -1,6 +1,7 @@
 #!/bin/sh
-# cp-climate's package step (run by HMG-API's tools/mkmodpkg.sh from its source root, after hooks.jar is built):
-#   sh mods/cp-climate/build.sh <package folder>
+# cp-climate's package step, run by the HMG-API mod SDK's bin/mkmodpkg.sh from the repo root, after
+# bin/build-mod.sh built the mod's classes (or by HMG-API's own tools/mkmodpkg.sh from mods/cp-climate):
+#   sh source/mod/build.sh <package folder>
 # Merges the video engine (tools/video: ExoPlayer through the phone's proxy, BouncyCastle TLS 1.3) into
 # hooks.jar: cp-climate's classes + the engine + its libraries, shrunk by R8 to one dex for Android 4.4.
 # Without tools/video the package keeps HMG-API's plain hooks.jar (no engine: answers only).
@@ -9,12 +10,18 @@ PKG=${1:?usage: build.sh <package folder>}
 HERE=$(cd "$(dirname "$0")" && pwd)
 V=$HERE/tools/video
 [ -d "$V/src" ] || exit 0
-[ -f "$V/r8.jar" ] || { echo "build.sh: the video engine's libraries are missing: run sh $V/fetch-libs.sh first" >&2; exit 1; }
+# CI and fresh checkouts have no libraries: fetch them (SHA-256 checked by fetch-libs.sh)
+{ [ -f "$V/r8.jar" ] && [ -d "$V/libs" ]; } || sh "$V/fetch-libs.sh" >&2
 ID=$(basename "$HERE")
-CORE=$PWD/out/mod-classes/$ID
-[ -d "$CORE" ] || { echo "build.sh: no $CORE (HMG-API's mod build first)" >&2; exit 1; }
+# the compiled mod classes: HMGAPI_MOD_WORK/classes if set, else out/mod-classes/<id> (HMG-API's own build),
+# out/work/<id>/classes (the SDK's mod workflow) or the temp work dir mkmodpkg.sh uses when nothing was built first
+CORE=""
+for c in "${HMGAPI_MOD_WORK:+$HMGAPI_MOD_WORK/classes}" "$PWD/out/mod-classes/$ID" "$PWD/out/work/$ID/classes" "$(dirname "$PKG")/work/classes"; do
+    if [ -n "$c" ] && [ -d "$c" ]; then CORE=$c; break; fi
+done
+[ -n "$CORE" ] || { echo "build.sh: no compiled mod classes (run the SDK's bin/build-mod.sh first)" >&2; exit 1; }
 SDK=${ANDROID_HOME:-$HOME/Library/Android/sdk}
-ANDROID_JAR=$(ls -d "$SDK"/platforms/android-*/android.jar | sort -V | tail -1)
+ANDROID_JAR=$(ls -d "$SDK"/platforms/android-34/android.jar 2>/dev/null || ls -d "$SDK"/platforms/android-*/android.jar | sort -V | tail -1)
 LIBS=$(ls "$V"/libs/*.jar | tr '\n' ':')
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/classes"
